@@ -1,0 +1,33 @@
+# Harness New Experience (v1 pipeline YAML): wait for the Shipyard environment
+# of the branch or PR being built, then run e2e tests against it.
+# Run it with a Branch or Pull request clone ref.
+pipeline:
+  clone:
+    connector: my_github_connector
+    repo: my-org/my-repo
+  stages:
+    - name: e2e
+      id: e2e
+      steps:
+        - name: shipyard
+          id: shipyard
+          timeout: 65m
+          run:
+            container:
+              image: ghcr.io/shipyard/harness-plugin:1
+            script: python /opt/shipyard/plugin.py
+            env:
+              PLUGIN_API_TOKEN: <+secrets.getValue("shipyard_api_token")>
+              PLUGIN_TIMEOUT_MINUTES: "60"
+              # PLUGIN_APP_NAME: frontend
+        - name: e2e_tests
+          id: e2e_tests
+          run:
+            container:
+              image: node:20
+            env:
+              CYPRESS_BASE_URL: <+steps.shipyard.output.outputVariables.SHIPYARD_ENVIRONMENT_URL>
+              CYPRESS_BYPASS_TOKEN: <+steps.shipyard.output.outputVariables.SHIPYARD_BYPASS_TOKEN>
+            script: |
+              npm ci
+              npm test
