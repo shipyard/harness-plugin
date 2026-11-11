@@ -23,6 +23,7 @@ Outputs:
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -229,6 +230,21 @@ class ShipyardClient:
     def restart_environment(self, env_id):
         self._request("POST", f"/api/v1/environment/{env_id}/restart")
 
+    def get_additional_urls(self, env_id):
+        """Per-service URLs of the environment, as {service_name: url}.
+
+        The list endpoint leaves additional_urls out, so read them from the
+        single-environment endpoint.
+        """
+        response = self._request("GET", f"/api/v1/environment/{env_id}")
+        try:
+            urls = response["data"]["attributes"].get("additional_urls") or {}
+        except (KeyError, TypeError, AttributeError):
+            raise PluginError("Unexpected response shape from the Shipyard API")
+        if not isinstance(urls, dict):
+            raise PluginError("Unexpected additional_urls in the Shipyard API response")
+        return urls
+
 
 def wait_for_environment(client, config, sleep=None, clock=None):
     sleep = sleep or time.sleep
@@ -278,7 +294,12 @@ def commit_hash_of(attrs):
     return project.get("commit_hash") or attrs.get("commit_hash")
 
 
-def build_outputs(env_id, attrs):
+def domain_output_name(service_name):
+    """SHIPYARD_DOMAIN_<NAME> for a service: uppercased, non-alphanumerics as _."""
+    return "SHIPYARD_DOMAIN_" + re.sub(r"[^A-Z0-9]", "_", service_name.upper())
+
+
+def build_outputs(env_id, attrs, additional_urls=None):
     outputs = {
         "SHIPYARD_ENVIRONMENT_URL": attrs["url"],
         "SHIPYARD_ENVIRONMENT_ID": env_id,
@@ -289,8 +310,8 @@ def build_outputs(env_id, attrs):
     commit_hash = commit_hash_of(attrs)
     if commit_hash:
         outputs["SHIPYARD_ENVIRONMENT_COMMIT_HASH"] = commit_hash
-    for name, url in (attrs.get("additional_urls") or {}).items():
-        outputs["SHIPYARD_DOMAIN_" + name.upper().replace("-", "_")] = url
+    for name, url in sorted((additional_urls or {}).items()):
+        outputs[domain_output_name(name)] = url
     return outputs, {"SHIPYARD_BYPASS_TOKEN": attrs["bypass_token"]}
 
 
@@ -332,7 +353,19 @@ def main(env=None):
         )
         client = ShipyardClient(config["api_url"], config["api_token"])
         env_id, attrs = wait_for_environment(client, config)
-        outputs, secrets = build_outputs(env_id, attrs)
+        # The extra URLs are a bonus: if they can't be read, still hand the
+        # main URL and token to the next steps.
+        try:
+            additional_urls = client.get_additional_urls(env_id)
+        except PluginError as e:
+            log(f"WARNING: could not read the environment's additional URLs: {e}")
+            additional_urls = {}
+        if additional_urls:
+            log(
+                "Additional URLs: "
+                + ", ".join(domain_output_name(n) for n in sorted(additional_urls))
+            )
+        outputs, secrets = build_outputs(env_id, attrs, additional_urls)
         write_outputs(outputs, secrets, env)
     except PluginError as e:
         log(f"ERROR: {e}")

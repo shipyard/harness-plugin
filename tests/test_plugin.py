@@ -25,11 +25,26 @@ def env_payload(**attrs):
     return {"data": [{"id": "env-uuid", "attributes": base}]}
 
 
+def detail_payload(additional_urls=None):
+    return {
+        "data": {
+            "id": "env-uuid",
+            "attributes": {"additional_urls": additional_urls or {}},
+        }
+    }
+
+
 class FakeShipyard:
-    """Local HTTP server that replays queued responses for the list endpoint."""
+    """Local HTTP server that replays queued responses.
+
+    GET /api/v1/environment?... (list) pops list_responses. Like the real API,
+    the list response has no additional_urls; GET /api/v1/environment/<id>
+    (detail) pops detail_responses, defaulting to no additional URLs.
+    """
 
     def __init__(self):
         self.list_responses = []  # list of (status, body)
+        self.detail_responses = []
         self.requests = []
         fake = self
 
@@ -48,7 +63,12 @@ class FakeShipyard:
             def do_GET(self):
                 headers = {k.lower(): v for k, v in self.headers.items()}
                 fake.requests.append(("GET", self.path, headers))
-                status, body = fake.list_responses.pop(0)
+                if urlparse(self.path).path == "/api/v1/environment":
+                    status, body = fake.list_responses.pop(0)
+                elif fake.detail_responses:
+                    status, body = fake.detail_responses.pop(0)
+                else:
+                    status, body = 200, detail_payload()
                 self._reply(status, body)
 
             def do_POST(self):
@@ -58,6 +78,13 @@ class FakeShipyard:
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def list_requests(self):
+        return [
+            r
+            for r in self.requests
+            if r[0] == "GET" and urlparse(r[1]).path == "/api/v1/environment"
+        ]
 
     def close(self):
         self.server.shutdown()
@@ -204,9 +231,11 @@ def test_ready_environment_writes_outputs_and_secret(shipyard, harness_env):
                     {"commit_hash": "aaa", "pull_request_number": None},
                     {"commit_hash": "bbb", "pull_request_number": 7},
                 ],
-                additional_urls={"api-gw": "https://api.example"},
             ),
         )
+    )
+    shipyard.detail_responses.append(
+        (200, detail_payload({"api-gw": "https://api.example"}))
     )
     assert plugin.main(harness_env) == 0
 
@@ -271,7 +300,7 @@ def test_waits_until_ready(shipyard, harness_env):
         (200, env_payload(ready=True)),
     ]
     assert plugin.main(harness_env) == 0
-    assert len(shipyard.requests) == 3
+    assert len(shipyard.list_requests()) == 3
 
 
 def test_retired_environment_is_restarted_once(shipyard, harness_env):
@@ -320,7 +349,7 @@ def test_client_error_is_not_retried(shipyard, harness_env, capsys):
 def test_server_error_is_retried(shipyard, harness_env):
     shipyard.list_responses += [(502, {}), (200, env_payload())]
     assert plugin.main(harness_env) == 0
-    assert len(shipyard.requests) == 2
+    assert len(shipyard.list_requests()) == 2
 
 
 def test_harness_output_file_used_when_no_drone_output(shipyard, harness_env, tmp_path):
@@ -337,3 +366,51 @@ def test_missing_output_file_fails(shipyard, harness_env, capsys):
     shipyard.list_responses.append((200, env_payload()))
     assert plugin.main(harness_env) == 1
     assert "does not support step output variables" in capsys.readouterr().out
+
+
+def test_every_additional_url_becomes_an_output(shipyard, harness_env):
+    shipyard.list_responses.append((200, env_payload()))
+    shipyard.detail_responses.append(
+        (
+            200,
+            detail_payload(
+                {
+                    "frontend": "https://web.example",
+                    "api": "https://api.example",
+                    "admin.panel": "https://admin.example",
+                }
+            ),
+        )
+    )
+    assert plugin.main(harness_env) == 0
+    detail = [r for r in shipyard.requests if r[1] == "/api/v1/environment/env-uuid"]
+    assert len(detail) == 1
+    outputs = read_env(harness_env["DRONE_OUTPUT"])
+    assert {k: v for k, v in outputs.items() if k.startswith("SHIPYARD_DOMAIN_")} == {
+        "SHIPYARD_DOMAIN_FRONTEND": "https://web.example",
+        "SHIPYARD_DOMAIN_API": "https://api.example",
+        "SHIPYARD_DOMAIN_ADMIN_PANEL": "https://admin.example",
+    }
+
+
+def test_additional_urls_come_from_detail_not_list(shipyard, harness_env):
+    # The real list endpoint omits additional_urls; even if it sent them, the
+    # detail endpoint is the source of truth.
+    shipyard.list_responses.append(
+        (200, env_payload(additional_urls={"stale": "https://stale.example"}))
+    )
+    assert plugin.main(harness_env) == 0
+    outputs = read_env(harness_env["DRONE_OUTPUT"])
+    assert not [k for k in outputs if k.startswith("SHIPYARD_DOMAIN_")]
+
+
+def test_detail_failure_still_writes_main_outputs(shipyard, harness_env, capsys):
+    shipyard.list_responses.append((200, env_payload()))
+    shipyard.detail_responses += [(502, {})] * 3
+    assert plugin.main(harness_env) == 0
+    outputs = read_env(harness_env["DRONE_OUTPUT"])
+    assert (
+        outputs["SHIPYARD_ENVIRONMENT_URL"] == "https://app-pr-1.example.shipyard.host"
+    )
+    assert read_env(harness_env["HARNESS_OUTPUT_SECRET_FILE"])
+    assert "could not read the environment's additional URLs" in capsys.readouterr().out
