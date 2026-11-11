@@ -113,7 +113,10 @@ Read these in later steps as `<+steps.STEP_ID.output.outputVariables.NAME>`.
 | `SHIPYARD_BYPASS_TOKEN` | Token to bypass authentication (output secret, masked in logs) |
 | `SHIPYARD_ENVIRONMENT_COMMIT_HASH` | Commit the environment was built from, when known |
 | `SHIPYARD_ENVIRONMENT_READY`, `SHIPYARD_ENVIRONMENT_RETIRED` | Environment state |
-| `SHIPYARD_DOMAIN`, `SHIPYARD_DOMAIN_<NAME>` | Main URL, and each additional URL by name |
+| `SHIPYARD_DOMAIN` | Main URL (same as `SHIPYARD_ENVIRONMENT_URL`) |
+| `SHIPYARD_DOMAIN_<SERVICE>` | URL of each routed service, one output per service |
+
+For apps with several routed services, there is one `SHIPYARD_DOMAIN_<SERVICE>` output per service. The name is the Compose service name uppercased, with every character other than a letter or digit replaced by `_`: service `api-gw` gives `SHIPYARD_DOMAIN_API_GW`. Services that share a host through path routes all report that host.
 
 `SHIPYARD_BYPASS_TOKEN` is written as a Harness [output secret](https://developer.harness.io/docs/continuous-integration/use-ci/use-drone-plugins/plugin-step-settings-reference/) so it is masked in logs. Harness provides output secrets through `HARNESS_OUTPUT_SECRET_FILE`; on some accounts they need the `CI_ENABLE_OUTPUT_SECRETS` feature flag (plus `CI_ENABLE_PLUGIN_OUTPUT_SECRETS` on Docker runners), which Harness support can enable. Without them, the plugin still works but writes the token as a plain output variable and logs a warning.
 
