@@ -269,13 +269,15 @@ def write_env_file(path, values):
 
 def write_outputs(outputs, secrets, env=None):
     env = os.environ if env is None else env
-    output_path = env.get("DRONE_OUTPUT")
+    # Classic Harness CI Plugin steps get DRONE_OUTPUT; Harness New Experience
+    # (v1 YAML) steps get HARNESS_OUTPUT instead.
+    output_path = env.get("DRONE_OUTPUT") or env.get("HARNESS_OUTPUT")
     secret_path = env.get("HARNESS_OUTPUT_SECRET_FILE")
 
     if not output_path:
         raise PluginError(
-            "DRONE_OUTPUT is not set; this build infrastructure does not support "
-            "plugin output variables"
+            "Neither DRONE_OUTPUT nor HARNESS_OUTPUT is set; this build "
+            "infrastructure does not support step output variables"
         )
     if secret_path:
         write_env_file(secret_path, secrets)

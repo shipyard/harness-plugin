@@ -285,8 +285,18 @@ def test_server_error_is_retried(shipyard, harness_env):
     assert len(shipyard.requests) == 2
 
 
-def test_missing_drone_output_fails(shipyard, harness_env, capsys):
+def test_harness_output_used_when_no_drone_output(shipyard, harness_env, tmp_path):
+    # Harness New Experience (v1 YAML) sets HARNESS_OUTPUT, not DRONE_OUTPUT.
+    del harness_env["DRONE_OUTPUT"]
+    harness_env["HARNESS_OUTPUT"] = str(tmp_path / "harness-out.env")
+    shipyard.list_responses.append((200, env_payload()))
+    assert plugin.main(harness_env) == 0
+    outputs = read_env(harness_env["HARNESS_OUTPUT"])
+    assert outputs["SHIPYARD_ENVIRONMENT_ID"] == "env-uuid"
+
+
+def test_missing_output_file_fails(shipyard, harness_env, capsys):
     del harness_env["DRONE_OUTPUT"]
     shipyard.list_responses.append((200, env_payload()))
     assert plugin.main(harness_env) == 1
-    assert "does not support plugin output variables" in capsys.readouterr().out
+    assert "does not support step output variables" in capsys.readouterr().out
