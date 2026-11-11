@@ -285,13 +285,12 @@ def test_server_error_is_retried(shipyard, harness_env):
     assert len(shipyard.requests) == 2
 
 
-def test_harness_output_used_when_no_drone_output(shipyard, harness_env, tmp_path):
-    # Harness New Experience (v1 YAML) sets HARNESS_OUTPUT, not DRONE_OUTPUT.
+def test_harness_output_file_used_when_no_drone_output(shipyard, harness_env, tmp_path):
     del harness_env["DRONE_OUTPUT"]
-    harness_env["HARNESS_OUTPUT"] = str(tmp_path / "harness-out.env")
+    harness_env["HARNESS_OUTPUT_FILE"] = str(tmp_path / "harness-out.env")
     shipyard.list_responses.append((200, env_payload()))
     assert plugin.main(harness_env) == 0
-    outputs = read_env(harness_env["HARNESS_OUTPUT"])
+    outputs = read_env(harness_env["HARNESS_OUTPUT_FILE"])
     assert outputs["SHIPYARD_ENVIRONMENT_ID"] == "env-uuid"
 
 
