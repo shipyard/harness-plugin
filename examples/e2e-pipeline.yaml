@@ -1,0 +1,51 @@
+# A Harness CI stage that waits for this PR's Shipyard environment and runs
+# Cypress against it. Paste the steps into your own stage.
+pipeline:
+  name: shipyard-e2e
+  identifier: shipyard_e2e
+  projectIdentifier: my_project
+  orgIdentifier: default
+  properties:
+    ci:
+      codebase:
+        connectorRef: my_github_connector
+        repoName: my-repo
+        build: <+input>
+  stages:
+    - stage:
+        name: e2e
+        identifier: e2e
+        type: CI
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Plugin
+                  name: Fetch Shipyard environment
+                  identifier: shipyard
+                  timeout: 65m
+                  spec:
+                    image: ghcr.io/shipyard/harness-plugin:1
+                    settings:
+                      api_token: <+secrets.getValue("shipyard_api_token")>
+                      timeout_minutes: "60"
+                      # app_name: frontend
+              - step:
+                  type: Run
+                  name: Run e2e tests
+                  identifier: e2e_tests
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      CYPRESS_BASE_URL: <+steps.shipyard.output.outputVariables.SHIPYARD_ENVIRONMENT_URL>
+                      CYPRESS_BYPASS_TOKEN: <+steps.shipyard.output.outputVariables.SHIPYARD_BYPASS_TOKEN>
+                    command: |
+                      npm ci
+                      npm run test
