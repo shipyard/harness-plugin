@@ -108,6 +108,44 @@ def test_push_build_falls_back_to_commit_branch(harness_env):
     assert plugin.resolve_config(harness_env)["branch"] == "release"
 
 
+def test_repo_comes_from_clone_url_not_connector_owner(harness_env):
+    # Seen on Harness: an account-level connector owned by a user reports the
+    # user as DRONE_REPO_OWNER for a repo that lives in an org.
+    harness_env.update(
+        DRONE_REPO_OWNER="some-user",
+        DRONE_REPO_NAME="web",
+        DRONE_REMOTE_URL="https://github.com/acme-org/web.git",
+        DRONE_REPO_LINK="https://github.com/acme-org/web",
+    )
+    config = plugin.resolve_config(harness_env)
+    assert (config["repo_owner"], config["repo_name"]) == ("acme-org", "web")
+
+
+def test_repo_link_used_when_no_remote_url(harness_env):
+    harness_env.update(
+        DRONE_REPO_OWNER="some-user", DRONE_REPO_LINK="https://github.com/acme-org/web"
+    )
+    assert plugin.resolve_config(harness_env)["repo_owner"] == "acme-org"
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://github.com/acme/web.git", ("acme", "web")),
+        ("https://github.com/acme/web", ("acme", "web")),
+        ("git@github.com:acme/web.git", ("acme", "web")),
+        ("https://gitlab.com/acme/team/web.git", ("acme/team", "web")),
+        ("https://bitbucket.org/acme/web.git", ("acme", "web")),
+        ("https://dev.azure.com/acme/proj/_git/web", (None, None)),
+        ("https://github.com/acme", (None, None)),
+        ("", (None, None)),
+        (None, (None, None)),
+    ],
+)
+def test_repo_from_url(url, expected):
+    assert plugin.repo_from_url(url) == expected
+
+
 def test_settings_override_drone_vars(harness_env):
     harness_env.update(
         PLUGIN_REPO_OWNER="other", PLUGIN_REPO_NAME="api", PLUGIN_BRANCH="b2"

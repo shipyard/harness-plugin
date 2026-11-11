@@ -9,8 +9,9 @@ Settings (Harness passes each `settings:` key as a PLUGIN_* env var):
   app_name         PLUGIN_APP_NAME, falls back to SHIPYARD_APP_NAME
   api_url          PLUGIN_API_URL, falls back to SHIPYARD_API_URL (default https://shipyard.build)
   repo_owner, repo_name, branch
-                   override what Harness reports (DRONE_REPO_OWNER,
-                   DRONE_REPO_NAME, DRONE_SOURCE_BRANCH / DRONE_COMMIT_BRANCH)
+                   override what Harness reports: the repo comes from the clone
+                   URL (DRONE_REMOTE_URL / DRONE_REPO_LINK), the branch from
+                   DRONE_SOURCE_BRANCH, falling back to DRONE_COMMIT_BRANCH
 
 Outputs:
   $DRONE_OUTPUT                 SHIPYARD_ENVIRONMENT_URL, _ID, _READY, _RETIRED,
@@ -64,6 +65,29 @@ def setting(name, fallback_env=None, env=None):
     return value or None
 
 
+def repo_from_url(url):
+    """(owner, name) from a git URL, or (None, None) if it can't be parsed.
+
+    Handles https://host/owner/repo(.git), git@host:owner/repo(.git), and
+    GitLab subgroups (owner is everything before the repo name). Azure Repos
+    URLs (/_git/) aren't in owner/repo form, so they return (None, None).
+    """
+    if not url:
+        return None, None
+    url = url.strip()
+    if "://" in url:
+        path = urllib.parse.urlparse(url).path
+    elif ":" in url:  # scp-style ssh: git@github.com:owner/repo.git
+        path = url.split(":", 1)[1]
+    else:
+        return None, None
+    path = path.strip("/").removesuffix(".git")
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2 or "_git" in parts:
+        return None, None
+    return "/".join(parts[:-1]), parts[-1]
+
+
 def resolve_config(env=None):
     env = os.environ if env is None else env
 
@@ -82,8 +106,16 @@ def resolve_config(env=None):
         except ValueError:
             raise PluginError(f'timeout_minutes ("{timeout}") is not an integer')
 
-    repo_owner = setting("repo_owner", env=env) or env.get("DRONE_REPO_OWNER")
-    repo_name = setting("repo_name", env=env) or env.get("DRONE_REPO_NAME")
+    # DRONE_REPO_OWNER is the *connector's* account, not the repo's: with an
+    # account-level connector owned by a user, a repo in an org reports the
+    # user. The clone URL always names the real repo, so prefer it.
+    url_owner, url_name = repo_from_url(
+        env.get("DRONE_REMOTE_URL") or env.get("DRONE_REPO_LINK")
+    )
+    repo_owner = (
+        setting("repo_owner", env=env) or url_owner or env.get("DRONE_REPO_OWNER")
+    )
+    repo_name = setting("repo_name", env=env) or url_name or env.get("DRONE_REPO_NAME")
     # DRONE_SOURCE_BRANCH is the PR head branch, and matches the pushed branch
     # on push builds. DRONE_BRANCH/DRONE_COMMIT_BRANCH is the PR *target*
     # branch, so it is only a fallback.
