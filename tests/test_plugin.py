@@ -414,3 +414,94 @@ def test_detail_failure_still_writes_main_outputs(shipyard, harness_env, capsys)
     )
     assert read_env(harness_env["HARNESS_OUTPUT_SECRET_FILE"])
     assert "could not read the environment's additional URLs" in capsys.readouterr().out
+
+
+# --- GitLab CI ---------------------------------------------------------------
+
+
+@pytest.fixture
+def gitlab_env(tmp_path, shipyard):
+    return {
+        "GITLAB_CI": "true",
+        "SHIPYARD_API_TOKEN": "tok",
+        "SHIPYARD_API_URL": shipyard.url,
+        "CI_PROJECT_PATH": "acme/platform/web",
+        "CI_PROJECT_NAME": "Web App",
+        "CI_PROJECT_NAMESPACE": "acme/platform",
+        "CI_COMMIT_BRANCH": "feature-x",
+        "CI_COMMIT_REF_NAME": "feature-x",
+        "SHIPYARD_OUTPUT_FILE": str(tmp_path / "shipyard.env"),
+    }
+
+
+def test_gitlab_repo_from_project_path_with_subgroups(gitlab_env):
+    # CI_PROJECT_NAME is the display name; Shipyard stores the project path.
+    config = plugin.resolve_config(gitlab_env)
+    assert (config["repo_owner"], config["repo_name"], config["branch"]) == (
+        "acme/platform",
+        "web",
+        "feature-x",
+    )
+
+
+def test_gitlab_merge_request_uses_source_branch(gitlab_env):
+    del gitlab_env["CI_COMMIT_BRANCH"]
+    gitlab_env.update(
+        CI_MERGE_REQUEST_SOURCE_BRANCH_NAME="feature-x",
+        CI_MERGE_REQUEST_TARGET_BRANCH_NAME="main",
+        CI_COMMIT_REF_NAME="refs/merge-requests/7/head",
+    )
+    assert plugin.resolve_config(gitlab_env)["branch"] == "feature-x"
+
+
+def test_gitlab_tag_pipeline_is_rejected(gitlab_env):
+    del gitlab_env["CI_COMMIT_BRANCH"]
+    gitlab_env.update(CI_COMMIT_TAG="v1.2.3", CI_COMMIT_REF_NAME="v1.2.3")
+    with pytest.raises(plugin.PluginError, match="tag"):
+        plugin.resolve_config(gitlab_env)
+
+
+def test_gitlab_ignores_drone_vars(gitlab_env):
+    gitlab_env.update(DRONE_REPO_OWNER="other", DRONE_SOURCE_BRANCH="other-branch")
+    config = plugin.resolve_config(gitlab_env)
+    assert (config["repo_owner"], config["branch"]) == ("acme/platform", "feature-x")
+
+
+def test_gitlab_shipyard_env_overrides(gitlab_env):
+    gitlab_env.update(
+        SHIPYARD_REPO_OWNER="o", SHIPYARD_REPO_NAME="n", SHIPYARD_BRANCH="b"
+    )
+    config = plugin.resolve_config(gitlab_env)
+    assert (config["repo_owner"], config["repo_name"], config["branch"]) == (
+        "o",
+        "n",
+        "b",
+    )
+
+
+def test_gitlab_writes_everything_to_dotenv(shipyard, gitlab_env, capsys):
+    shipyard.list_responses.append((200, env_payload()))
+    shipyard.detail_responses.append(
+        (200, detail_payload({"api": "https://api.example"}))
+    )
+    assert plugin.main(gitlab_env) == 0
+    query = parse_qs(urlparse(shipyard.list_requests()[0][1]).query)
+    assert query["repo_owner"] == ["acme/platform"]
+    assert query["repo_name"] == ["web"]
+    dotenv = read_env(gitlab_env["SHIPYARD_OUTPUT_FILE"])
+    assert (
+        dotenv["SHIPYARD_ENVIRONMENT_URL"] == "https://app-pr-1.example.shipyard.host"
+    )
+    assert dotenv["SHIPYARD_BYPASS_TOKEN"] == "bypass-123"
+    assert dotenv["SHIPYARD_DOMAIN_API"] == "https://api.example"
+    out = capsys.readouterr().out
+    assert "bypass-123" not in out
+    assert "HARNESS_OUTPUT_SECRET_FILE" not in out
+
+
+def test_gitlab_default_output_file(shipyard, gitlab_env, tmp_path, monkeypatch):
+    del gitlab_env["SHIPYARD_OUTPUT_FILE"]
+    monkeypatch.chdir(tmp_path)
+    shipyard.list_responses.append((200, env_payload()))
+    assert plugin.main(gitlab_env) == 0
+    assert read_env(tmp_path / "shipyard.env")["SHIPYARD_ENVIRONMENT_ID"] == "env-uuid"

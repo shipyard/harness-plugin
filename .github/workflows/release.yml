@@ -1,7 +1,7 @@
 name: release
 
-# Push a tag like v1.0.0 to publish ghcr.io/shipyard/harness-plugin:1.0.0,
-# :1.0, :1 and :latest.
+# Push a tag like v1.0.0 to publish ghcr.io/shipyard/harness-plugin and
+# ghcr.io/shipyard/ci-plugin, each tagged 1.0.0, 1.0, 1 and latest.
 on:
   push:
     tags: ["v*.*.*"]
@@ -25,7 +25,11 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/shipyard/harness-plugin
+          # Same image under both names: harness-plugin (original) and the
+          # CI-neutral ci-plugin, used by the GitLab CI/CD component.
+          images: |
+            ghcr.io/shipyard/harness-plugin
+            ghcr.io/shipyard/ci-plugin
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

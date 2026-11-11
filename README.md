@@ -1,4 +1,4 @@
-# Shipyard Harness CI Plugin
+# Shipyard CI Plugin (Harness CI and GitLab CI)
 
 [![GitHub License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -81,6 +81,10 @@ A full pipeline is in [`examples/e2e-pipeline.yaml`](examples/e2e-pipeline.yaml)
 
 Either way, give the step a Harness `timeout` longer than `timeout_minutes`, so the plugin's own timeout message is what you see.
 
+### GitLab CI
+
+Use the [Shipyard GitLab CI/CD component](https://gitlab.com/shipyardbuild/ci-component), which runs this image (as `ghcr.io/shipyard/ci-plugin`) and passes the outputs to later jobs as dotenv variables. On GitLab the plugin reads the repo from `CI_PROJECT_PATH` and the branch from `CI_MERGE_REQUEST_SOURCE_BRANCH_NAME`, then `CI_COMMIT_BRANCH`.
+
 ### Settings
 
 | Setting (classic) | Env var (New Experience) | Description | Default |
@@ -130,7 +134,7 @@ make lint          # ruff
 make docker.build  # build the image locally
 ```
 
-Releases: push a tag like `v1.0.0` to publish `ghcr.io/shipyard/harness-plugin` with tags `1.0.0`, `1.0`, `1` and `latest`.
+Releases: push a tag like `v1.0.0` to publish `ghcr.io/shipyard/harness-plugin` and `ghcr.io/shipyard/ci-plugin` (the same image), each with tags `1.0.0`, `1.0`, `1` and `latest`.
 
 ## Resources
 

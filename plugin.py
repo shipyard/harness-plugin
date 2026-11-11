@@ -1,24 +1,32 @@
-"""Shipyard plugin for Harness CI.
+"""Shipyard plugin for Harness CI and GitLab CI.
 
 Waits for the Shipyard environment of the current repo and branch to be
 ready, then exports its URL, ID and bypass token as step outputs.
 
-Settings (Harness passes each `settings:` key as a PLUGIN_* env var):
+Settings (Harness passes each `settings:` key as a PLUGIN_* env var; on GitLab,
+the CI/CD component sets the SHIPYARD_* env vars):
   api_token        PLUGIN_API_TOKEN, falls back to SHIPYARD_API_TOKEN (required)
   timeout_minutes  PLUGIN_TIMEOUT_MINUTES, falls back to SHIPYARD_TIMEOUT (default 60)
   app_name         PLUGIN_APP_NAME, falls back to SHIPYARD_APP_NAME
   api_url          PLUGIN_API_URL, falls back to SHIPYARD_API_URL (default https://shipyard.build)
   repo_owner, repo_name, branch
-                   override what Harness reports: the repo comes from the clone
-                   URL (DRONE_REMOTE_URL / DRONE_REPO_LINK), the branch from
-                   DRONE_SOURCE_BRANCH, falling back to DRONE_COMMIT_BRANCH
+                   override what the CI reports (also SHIPYARD_REPO_OWNER, ...).
+                   GitLab: CI_PROJECT_PATH, and the branch from
+                   CI_MERGE_REQUEST_SOURCE_BRANCH_NAME / CI_COMMIT_BRANCH.
+                   Harness: the clone URL (DRONE_REMOTE_URL / DRONE_REPO_LINK),
+                   the branch from DRONE_SOURCE_BRANCH / DRONE_COMMIT_BRANCH.
+  output_file      PLUGIN_OUTPUT_FILE / SHIPYARD_OUTPUT_FILE: where to write the
+                   outputs (KEY=value lines). Defaults to $DRONE_OUTPUT, then
+                   $HARNESS_OUTPUT_FILE; on GitLab, shipyard.env.
 
-Outputs:
+Outputs (Harness):
   $DRONE_OUTPUT                 SHIPYARD_ENVIRONMENT_URL, _ID, _READY, _RETIRED,
                                 _COMMIT_HASH, SHIPYARD_DOMAIN, SHIPYARD_DOMAIN_*
   $HARNESS_OUTPUT_SECRET_FILE   SHIPYARD_BYPASS_TOKEN (masked in logs). When
                                 Harness doesn't provide this file, the token
                                 goes to $DRONE_OUTPUT instead, unmasked.
+On GitLab every output, the token included, goes to the output file, which the
+component publishes as a dotenv artifact restricted to developers.
 """
 
 import json
@@ -36,7 +44,7 @@ DEFAULT_TIMEOUT_MINUTES = 60
 POLL_SECONDS = 15
 REQUEST_RETRIES = 3
 REQUEST_RETRY_DELAY = 5
-USER_AGENT = "shipyard-harness-plugin"
+USER_AGENT = "shipyard-ci-plugin"
 
 
 class PluginError(Exception):
@@ -89,6 +97,18 @@ def repo_from_url(url):
     return "/".join(parts[:-1]), parts[-1]
 
 
+def is_gitlab(env):
+    return env.get("GITLAB_CI") == "true"
+
+
+def split_repo_path(path):
+    """(owner, name) from "group/subgroup/project", or (None, None)."""
+    parts = [p for p in (path or "").strip("/").split("/") if p]
+    if len(parts) < 2:
+        return None, None
+    return "/".join(parts[:-1]), parts[-1]
+
+
 def resolve_config(env=None):
     env = os.environ if env is None else env
 
@@ -107,25 +127,38 @@ def resolve_config(env=None):
         except ValueError:
             raise PluginError(f'timeout_minutes ("{timeout}") is not an integer')
 
-    # DRONE_REPO_OWNER is the *connector's* account, not the repo's: with an
-    # account-level connector owned by a user, a repo in an org reports the
-    # user. The clone URL always names the real repo, so prefer it.
-    url_owner, url_name = repo_from_url(
-        env.get("DRONE_REMOTE_URL") or env.get("DRONE_REPO_LINK")
-    )
-    repo_owner = (
-        setting("repo_owner", env=env) or url_owner or env.get("DRONE_REPO_OWNER")
-    )
-    repo_name = setting("repo_name", env=env) or url_name or env.get("DRONE_REPO_NAME")
-    # DRONE_SOURCE_BRANCH is the PR head branch, and matches the pushed branch
-    # on push builds. DRONE_BRANCH/DRONE_COMMIT_BRANCH is the PR *target*
-    # branch, so it is only a fallback.
-    branch = (
-        setting("branch", env=env)
-        or env.get("DRONE_SOURCE_BRANCH")
-        or env.get("DRONE_COMMIT_BRANCH")
-        or env.get("DRONE_BRANCH")
-    )
+    if is_gitlab(env):
+        # Shipyard stores a GitLab repo as owner = the namespace's full path
+        # (subgroups included) and name = the project path, which is exactly
+        # CI_PROJECT_PATH split at its last "/".
+        ci_owner, ci_name = split_repo_path(env.get("CI_PROJECT_PATH"))
+        # On a merge request pipeline the environment is the MR's source
+        # branch; CI_COMMIT_BRANCH is unset there. Tag pipelines have neither.
+        ci_branch = env.get("CI_MERGE_REQUEST_SOURCE_BRANCH_NAME") or env.get(
+            "CI_COMMIT_BRANCH"
+        )
+        if not ci_branch and env.get("CI_COMMIT_TAG"):
+            ci_branch = "refs/tags/" + env["CI_COMMIT_TAG"]
+    else:
+        # DRONE_REPO_OWNER is the *connector's* account, not the repo's: with
+        # an account-level connector owned by a user, a repo in an org reports
+        # the user. The clone URL always names the real repo, so prefer it.
+        url_owner, url_name = repo_from_url(
+            env.get("DRONE_REMOTE_URL") or env.get("DRONE_REPO_LINK")
+        )
+        ci_owner = url_owner or env.get("DRONE_REPO_OWNER")
+        ci_name = url_name or env.get("DRONE_REPO_NAME")
+        # DRONE_SOURCE_BRANCH is the PR head branch, and matches the pushed
+        # branch on push builds. DRONE_BRANCH/DRONE_COMMIT_BRANCH is the PR
+        # *target* branch, so it is only a fallback.
+        ci_branch = (
+            env.get("DRONE_SOURCE_BRANCH")
+            or env.get("DRONE_COMMIT_BRANCH")
+            or env.get("DRONE_BRANCH")
+        )
+    repo_owner = setting("repo_owner", "SHIPYARD_REPO_OWNER", env) or ci_owner
+    repo_name = setting("repo_name", "SHIPYARD_REPO_NAME", env) or ci_name
+    branch = setting("branch", "SHIPYARD_BRANCH", env) or ci_branch
 
     missing = [
         name
@@ -138,7 +171,7 @@ def resolve_config(env=None):
     ]
     if missing:
         raise PluginError(
-            "Could not work out {} from the Harness build; set them as plugin "
+            "Could not work out {} from the CI build; set them as plugin "
             "settings".format(", ".join(missing))
         )
     if branch.startswith("refs/tags/"):
@@ -156,6 +189,7 @@ def resolve_config(env=None):
         "repo_owner": repo_owner,
         "repo_name": repo_name,
         "branch": branch,
+        "output_file": setting("output_file", "SHIPYARD_OUTPUT_FILE", env),
     }
 
 
@@ -320,11 +354,19 @@ def write_env_file(path, values):
         f.writelines(f"{key}={value}\n" for key, value in values.items())
 
 
-def write_outputs(outputs, secrets, env=None):
+def write_outputs(outputs, secrets, env=None, output_file=None):
     env = os.environ if env is None else env
+    if is_gitlab(env):
+        # The component publishes this file as a dotenv artifact. GitLab has no
+        # secret outputs, so the token goes in it too; the component restricts
+        # the artifact to developers and expires it quickly.
+        write_env_file(output_file or "shipyard.env", {**outputs, **secrets})
+        return
     # Harness sets DRONE_OUTPUT on classic Plugin steps and on New Experience
     # run steps; HARNESS_OUTPUT_FILE is the same file under Harness's own name.
-    output_path = env.get("DRONE_OUTPUT") or env.get("HARNESS_OUTPUT_FILE")
+    output_path = (
+        output_file or env.get("DRONE_OUTPUT") or env.get("HARNESS_OUTPUT_FILE")
+    )
     secret_path = env.get("HARNESS_OUTPUT_SECRET_FILE")
 
     if not output_path:
@@ -366,7 +408,7 @@ def main(env=None):
                 + ", ".join(domain_output_name(n) for n in sorted(additional_urls))
             )
         outputs, secrets = build_outputs(env_id, attrs, additional_urls)
-        write_outputs(outputs, secrets, env)
+        write_outputs(outputs, secrets, env, config["output_file"])
     except PluginError as e:
         log(f"ERROR: {e}")
         return 1
